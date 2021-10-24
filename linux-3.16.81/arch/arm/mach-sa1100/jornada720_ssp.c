@@ -62,10 +62,13 @@ int jornada_ssp_byte(u8 byte)
 	u16 ret;
 
 	while ((GPLR & GPIO_GPIO10)) {
+		/*
+		Commented out this lines because we have no flash board and want to get rid of the error message that shows up if we press the on/off button.
 		if (!--timeout) {
-			printk(KERN_WARNING "SSP: timeout while waiting for transmit\n");
-			return -ETIMEDOUT;
-		}
+		*	printk(KERN_WARNING "SSP: timeout while waiting for transmit\n");
+		*	return -ETIMEDOUT;
+		} 
+		*/
 		/* cpu_relax(); */
 	}
 
