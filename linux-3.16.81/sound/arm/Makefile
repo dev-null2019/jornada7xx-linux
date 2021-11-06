@@ -16,4 +16,4 @@ obj-$(CONFIG_SND_PXA2XX_AC97)	+= snd-pxa2xx-ac97.o
 snd-pxa2xx-ac97-objs		:= pxa2xx-ac97.o
 
 obj-$(CONFIG_SND_JORNADA720) += snd-jornada720.o
-snd-jornada720-objs          := jornada720.o
+snd-jornada720-y          := jornada720-sound.o jornada720-sac.o jornada720-uda1344.o jornada720-sacdma.o 
