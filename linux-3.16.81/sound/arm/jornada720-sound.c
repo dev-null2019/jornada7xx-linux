@@ -76,7 +76,7 @@
 #include "jornada720-uda1344.h"
 
 #ifdef STARTUP_CHIME
-#include "octane.h"   // <- 8 bit mono startup sound 11khz (playing too fast)
+#include "octane.h"   // <- 8 bit mono startup sound 11khz
 #endif 
 
 #ifdef DEBUG_SOUND
@@ -84,6 +84,13 @@
 #else
 #undef DEBUG
 #endif
+
+#define DEBUG
+#ifdef DEBUG
+#define DPRINTK(format,args...) printk(KERN_DEBUG format,##args)
+#else
+#define DPRINTK(format,args...)
+#endif 
 
 MODULE_AUTHOR("Timo Biesenbach <timo.biesenbach@gmail.com>");
 MODULE_DESCRIPTION("Jornada 720 Sound Driver");
@@ -97,12 +104,10 @@ static int pcm_substreams = 1;
 module_param(id, charp, 0444);
 MODULE_PARM_DESC(id, "ID string for Jornada 720 UDA1341 soundcard.");
 
-// Sound driver global lock
-static DEFINE_SPINLOCK(snd_jornada720_snd_lock);
-
 /*
+ * ========================================================================================
  * PCM interface
- 
+ * ========================================================================================
  */
 static struct snd_pcm_hardware jornada720_pcm_hardware = {
 	.info =				(SNDRV_PCM_INFO_MMAP |
@@ -135,7 +140,9 @@ static struct snd_pcm_hardware jornada720_pcm_hardware = {
 };
 
 /*
+ * ========================================================================================
  *  PCM Stuff
+ * ========================================================================================
  */
 
 // PCM DMA datastructures
@@ -161,34 +168,25 @@ static void dbg_show_buffer(dma_buf_t* buffer) {
 /** Called from the DMA interrupt to update the playback position */
 static void jornada720_pcm_callback(dma_buf_t *buf, int state) {
 	snd_pcm_period_elapsed(buf->snd_jornada720->substream);
-
-	#ifdef DEBUG
-	if (state==STATE_RUNNING) {
-		printk(KERN_INFO "sound: j720 sa1111 playing");
-	}
-
-	if (state==STATE_FINISHED) {
-		printk(KERN_INFO "sound: j720 sa1111 stopped");
-	} 
-	printk("sound: at adress 0x%lxh, start adress 0x%lxh, size %d bytes\n", buf->dma_ptr, buf->dma_start, buf->size);
-	#endif
 }
 
 /** Start / Stop PCM playback */
 static int jornada720_pcm_trigger(struct snd_pcm_substream *substream, int cmd) {
 	struct snd_jornada720 *jornada720 = snd_pcm_substream_chip(substream);
+	struct snd_pcm_runtime *runtime = substream->runtime;
 	int err=0;
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
 		DPRINTK(KERN_INFO "sound: jornada720_pcm_trigger START / RESUME\n");
-		dbg_show_buffer(&playback_buffer);
+		// dbg_show_buffer(&playback_buffer);
 		err = sa1111_dma_playback(jornada720->pdev_sa1111, &playback_buffer, jornada720_pcm_callback);
 		if (err<0) {
 			printk(KERN_ERR "sound: sa1111_dma_playback() failed.\n");
 			sa1111_dma_playstop(jornada720->pdev_sa1111, &playback_buffer);
 		}		
+		
 		break;	
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
@@ -209,6 +207,10 @@ static int jornada720_pcm_prepare(struct snd_pcm_substream *substream) {
 	DPRINTK(KERN_INFO "sound: jornada720_pcm_prepare\n");
 	struct snd_jornada720 *jornada720 = snd_pcm_substream_chip(substream);
 	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct sa1111 *sachip = get_sa1111_base_drv(jornada720->pdev_sa1111);
+	unsigned long flags;
+
+	spin_lock_irqsave(&sachip->lock, flags);
 
 	jornada720->substream = substream;
 
@@ -218,9 +220,8 @@ static int jornada720_pcm_prepare(struct snd_pcm_substream *substream) {
 	playback_buffer.size = snd_pcm_lib_buffer_bytes(substream);
 	playback_buffer.period_size	= snd_pcm_lib_period_bytes(substream);
 	playback_buffer.loop = 1;
-	dbg_show_buffer(&playback_buffer);
-
-	jornada720->substream = substream;
+	// dbg_show_buffer(&playback_buffer);
+	spin_unlock_irqrestore(&sachip->lock, flags);
 	return 0;
 }
 
@@ -228,13 +229,17 @@ static int jornada720_pcm_prepare(struct snd_pcm_substream *substream) {
 static snd_pcm_uframes_t jornada720_pcm_pointer(struct snd_pcm_substream *substream) {
 	DPRINTK(KERN_INFO "sound: jornada720_pcm_pointer\n");
 	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct snd_jornada720 *jornada720 = snd_pcm_substream_chip(substream);
+	struct sa1111 *sachip = get_sa1111_base_drv(jornada720->pdev_sa1111);
+	unsigned long flags;
+	snd_pcm_sframes_t frames_played;
+
+	spin_lock_irqsave(&sachip->lock, flags);
 	ssize_t bytes = playback_buffer.dma_ptr - playback_buffer.dma_start;
-	#ifdef DEBUG
-	printk(KERN_INFO "sound: .dma_ptr:        0x%lxh\n", playback_buffer.dma_ptr);
-	printk(KERN_INFO "sound: .dma_start:      0x%lxh\n", playback_buffer.dma_start);
-	printk(KERN_INFO "sound: bytes played %d out of %d\n", bytes, playback_buffer.size);
-	#endif
-	return bytes_to_frames(runtime, bytes);
+	frames_played = bytes_to_frames(runtime, bytes);
+	spin_unlock_irqrestore(&sachip->lock, flags);
+
+	return frames_played;
 }
 
 /* Allocate DMA memory pages */
@@ -245,13 +250,17 @@ static int jornada720_pcm_hw_params(struct snd_pcm_substream *substream, struct 
 	int samplerate = params_rate(hw_params);
 	DPRINTK(KERN_INFO "sound: jornada720_pcm_hw_params set samplerate %d\n", samplerate);
 	uda1344_set_samplerate(jornada720->pdev_sa1111, samplerate);
-
+	sa1111_audio_setsamplerate(jornada720->pdev_sa1111, samplerate);
+	// sa1111_i2s_start(jornada720->pdev_sa1111);
 	return snd_pcm_lib_malloc_pages(substream, params_buffer_bytes(hw_params));
 }
 
 /* Give back the DMA memory pages */
 static int jornada720_pcm_hw_free(struct snd_pcm_substream *substream) {
+	struct snd_jornada720 *jornada720 = snd_pcm_substream_chip(substream);
+
 	DPRINTK(KERN_INFO "sound: jornada720_pcm_hw_free\n");
+	// sa1111_i2s_end(jornada720->pdev_sa1111);
 	return snd_pcm_lib_free_pages(substream);
 }
 
@@ -270,7 +279,6 @@ static int jornada720_pcm_close(struct snd_pcm_substream *substream) {
 	int err=0;
 	struct snd_jornada720 *jornada720 = snd_pcm_substream_chip(substream);
 	// PCM close code
-
 	return 0;
 }
 
@@ -310,8 +318,9 @@ static int snd_card_jornada720_pcm(struct snd_jornada720 *jornada720, int device
 	return 0;
 }
 
-/*
+/* ========================================================================================
  * Mixer interface
+ * ========================================================================================
  */
 
 #define JORNADA720_VOLUME(xname, xindex, addr) \
@@ -359,7 +368,6 @@ static int snd_jornada720_volume_put(struct snd_kcontrol *kcontrol, struct snd_c
 	spin_unlock_irq(&jornada720->mixer_lock);
 
 	if (change)	uda1344_set_volume(jornada720->pdev_sa1111, left);
-
 	return change;
 }
 
@@ -616,6 +624,11 @@ static int snd_card_jornada720_new_mixer(struct snd_jornada720 *jornada720) {
 	return 0;
 }
 
+/*
+ * ========================================================================================
+ * Initialization
+ * ========================================================================================
+ */
 #if defined(CONFIG_SND_DEBUG) && defined(CONFIG_PROC_FS)
 /*
  * proc interface
@@ -777,43 +790,10 @@ static void sa1111_play_chime(struct sa1111_dev *devptr) {
 			sa1111_sac_writereg(devptr, sample, SA1111_SADR+(sadr*4));
 			i++;
 		}
-
-		#ifdef DEBUG
-		if (round==0) {
-			// Readout status register and fifo levlel
-			val = sa1111_sac_readreg(devptr, SA1111_SASR0);
-			printk(KERN_DEBUG "sound: sa1111 SASR0: 0x%lxh\n", val);
-
-			val = (val >> 8) & 0x0f;
-			printk(KERN_DEBUG "sound: sa1111 Tx FIFO level: %d\n", val);
-
-			printk(KERN_DEBUG "sound: sa1111 Tx left channel 8bit  data: %lx\n", octanestart_wav[i]);
-			printk(KERN_DEBUG "sound: sa1111 Tx left channel 16bit data: %lx\n", left);
-			printk(KERN_DEBUG "sound: sa1111 Tx sample data            : %lx\n", sample);
-			round++;
-		}
-		#endif
-
 		// Wait until FIFO not full
 		do {
 			val = sa1111_sac_readreg(devptr, SA1111_SASR0);
 		} while((val & SASR0_TNF)==0);
-	
-		#ifdef DEBUG
-		if (round==1) {
-			// Readout status register and fifo levlel
-			val = sa1111_sac_readreg(devptr, SA1111_SASR0);
-			printk(KERN_DEBUG "sound: sa1111 SASR0: 0x%lxh\n", val);
-
-			val = (val >> 8) & 0x0f;
-			printk(KERN_DEBUG "sound: sa1111 Tx FIFO level: %d\n", val);
-
-			printk(KERN_DEBUG "sound: sa1111 Tx left channel 8bit  data: %lx\n", octanestart_wav[i]);
-			printk(KERN_DEBUG "sound: sa1111 Tx left channel 16bit data: %lx\n", left);
-			printk(KERN_DEBUG "sound: sa1111 Tx sample data            : %lx\n", sample);
-			round++;
-		}
-		#endif
 	}
 }
 #endif
@@ -849,9 +829,9 @@ static int snd_jornada720_probe(struct sa1111_dev *devptr) {
 		return err;
 	}
 
-	// Initialize the SA1111 Serial Audio Controller including I2S and L3 bus
+	// Initialize the SA1111 Serial Audio Controller
 	sa1111_audio_init(devptr);
-	
+
 	// Program UDA1344 driver defaults
 	err = uda1344_open(devptr);
 	if (err < 0) {
@@ -861,6 +841,8 @@ static int snd_jornada720_probe(struct sa1111_dev *devptr) {
 
 	// Play startup sound
 	#ifdef STARTUP_CHIME
+	uda1344_set_samplerate(devptr, 11025);
+	sa1111_audio_setsamplerate(devptr, 11025);
 	sa1111_play_chime(devptr);
 	#endif
 
@@ -918,6 +900,9 @@ static int snd_jornada720_remove(struct sa1111_dev *devptr) {
 
 	// Close Codec
 	uda1344_close(devptr);
+
+	// Orderly shutdown the audio stuff.
+	sa1111_audio_shutdown(devptr);
 
 	// Turn SAC off
 	sa1111_disable_device(devptr);

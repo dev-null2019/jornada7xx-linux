@@ -34,7 +34,7 @@
 
 #include <mach/hardware.h>
 #include <mach/irqs.h>
-
+#include <mach/reset.h>
 #include "generic.h"
 
 /*
@@ -357,6 +357,15 @@ static void __init jornada720_mach_init(void)
 	sa11x0_register_mtd(&jornada720_flash_data, &jornada720_flash_resource, 1);
 }
 
+// Copied from sa11x0_restart
+void jornada720_restart(enum reboot_mode mode, const char *cmd) {
+	printk("Jornada 720 restarting...");
+	clear_reset_status(RESET_STATUS_ALL);
+	RSRR = RSRR_SWR;
+	RCSR = RCSR_HWR;
+}
+
+
 MACHINE_START(JORNADA720, "HP Jornada 720")
 	/* Maintainer: Kristoffer Ericson <Kristoffer.Ericson@gmail.com> */
 	.atag_offset	= 0x100,
@@ -369,5 +378,5 @@ MACHINE_START(JORNADA720, "HP Jornada 720")
 #ifdef CONFIG_SA1111
 	.dma_zone_size	= SZ_1M,
 #endif
-	.restart	= sa11x0_restart,
+	.restart	= jornada720_restart,
 MACHINE_END

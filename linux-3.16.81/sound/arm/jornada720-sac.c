@@ -44,27 +44,269 @@
 #undef DEBUG
 #endif
 
-// SAC module lock
-static DEFINE_SPINLOCK(snd_jornada720_sa1111_sac_lock);
+#define AUDIO_CLK_BASE		561600
 
-// SA1111 Sound Controller register write interface
+// SA1111 Sound Controller register write interface. Non-locking.
 void         sa1111_sac_writereg(struct sa1111_dev *devptr, unsigned int val, u32 reg) {
 	sa1111_writel(val, devptr->mapbase + reg);
 }
 
-// SA1111 Sound Controller register read interface
+// SA1111 Sound Controller register read interface.  Non-locking.
 unsigned int sa1111_sac_readreg(struct sa1111_dev *devptr, u32 reg) {
 	return sa1111_readl(devptr->mapbase + reg);
 }
 
-// Send bytes via SA1111-L3
-void 		   sa1111_l3_send_byte(struct sa1111_dev *devptr, unsigned char addr, unsigned char dat) {
+// Power up mic and speaker amps.  Non-locking.
+static void sa1111_enable_amps(void) {
+	PPSR &= ~(PPC_LDD3 | PPC_LDD4); // 5/6 are not leds
+	PPDR |= PPC_LDD3 | PPC_LDD4;
+	PPSR |= PPC_LDD4; /* enable speaker */
+	PPSR |= PPC_LDD3; /* enable microphone */
+	DPRINTK(KERN_INFO "sac: SA1111 speaker/mic pre-amps enabled\n");
+}
+
+// Power down mic and speaker amps.  Non-locking.
+static void sa1111_disable_amps(void) {
+	PPSR &= ~(PPC_LDD3 | PPC_LDD4); // 5/6 are not leds
+	PPDR |= PPC_LDD3 | PPC_LDD4;
+	PPSR &= ~PPC_LDD4; /* enable speaker */
+	PPSR &= ~PPC_LDD3; /* enable microphone */
+	DPRINTK(KERN_INFO "sac: SA1111 speaker/mic pre-amps disabled\n");
+}
+
+/* Enable the I2S clock. Non-locking. */
+static void sa1111_enable_i2s_clock(struct sa1111_dev *devptr) {
+	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
+	unsigned int val; 
+
+	val = sa1111_readl(sachip->base + SA1111_SKPCR);
+	val|= SKPCR_I2SCLKEN;
+	sa1111_writel(val, sachip->base + SA1111_SKPCR);
+	DPRINTK(KERN_INFO "sac: SA1111 I2S clock enabled\n");
+}
+
+/* Disable the I2S clock. Non-locking. */
+static void sa1111_disable_i2s_clock(struct sa1111_dev *devptr) {
+	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
+	unsigned int val; 
+
+	val = sa1111_readl(sachip->base + SA1111_SKPCR);
+	val&= ~(SKPCR_I2SCLKEN);
+	sa1111_writel(val, sachip->base + SA1111_SKPCR);
+	DPRINTK(KERN_INFO "sac: SA1111 I2S clock enabled\n");
+}
+
+/* Enable the L3 bus clock and SAC L3 interface. Non-locking. */
+static void sa1111_enable_l3_clock(struct sa1111_dev *devptr) {
+	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
+	unsigned int val;
+
+	val = sa1111_readl(sachip->base + SA1111_SKPCR);
+	val|= SKPCR_L3CLKEN;
+	sa1111_writel(val, sachip->base + SA1111_SKPCR);
+	DPRINTK(KERN_INFO "sac: SA1111 L3 clock enabled\n");
+}
+
+/* Disable the L3 bus clock and SAC L3 interface. Non-locking. */
+static void sa1111_disable_l3_clock(struct sa1111_dev *devptr) {
+	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
+	unsigned int val; 
+
+	sa1111_sac_writereg(devptr, 0x00, SA1111_SACR1);
+	DPRINTK(KERN_INFO "sac: SA1111 L3 interface enabled\n");
+
+	val = sa1111_readl(sachip->base + SA1111_SKPCR);
+	val&= ~SKPCR_L3CLKEN;
+	sa1111_writel(val, sachip->base + SA1111_SKPCR);
+	DPRINTK(KERN_INFO "sac: SA1111 L3 clock enabled\n");
+}
+
+/* Enable the L3 bus clock and SAC L3 interface. Non-locking. */
+static void sa1111_enable_l3(struct sa1111_dev *devptr) {
+	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
+	unsigned int val;
+
+	sa1111_sac_writereg(devptr, SACR1_L3EN, SA1111_SACR1);
+	DPRINTK(KERN_INFO "sac: SA1111 L3 interface enabled\n");
+}
+
+/* Disable the L3 bus clock and SAC L3 interface. Non-locking. */
+static void sa1111_disable_l3(struct sa1111_dev *devptr) {
+	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
+	unsigned int val; 
+
+	sa1111_sac_writereg(devptr, 0x00, SA1111_SACR1);
+	DPRINTK(KERN_INFO "sac: SA1111 L3 interface disabled\n");
+}
+
+/* Reset the SAC and enable it. Non-locking. */
+static void sa1111_reset_enable_sac(struct sa1111_dev *devptr) {
+	unsigned int val; 
+
+	/* Activate and reset the Serial Audio Controller */
+	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
+	val |= (SACR0_ENB | SACR0_RST);
+	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
+	mdelay(5);
+	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
+	val &= ~SACR0_RST;
+	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
+	DPRINTK(KERN_INFO "sac: SA1111 SAC reset and enabled\n");
+}
+
+/* Disable the SAC. Non-locking. */
+static void sa1111_disable_sac(struct sa1111_dev *devptr) {
+	unsigned int val; 
+	/* De-Activate the Serial Audio Controller */
+	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
+	val &= ~SACR0_ENB;
+	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
+	DPRINTK(KERN_INFO "sac: SA1111 SAC disabled\n");
+}
+
+
+/// ********** PUBLIC INTERFACE *************************
+
+/* Sets a new audio samplerate on the SAC chip level. Will disable I2S clock, write the 
+ * SKAUD register and re-start clock. Locking. */
+void sa1111_audio_setsamplerate(struct sa1111_dev *devptr, long rate) {
+	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
+	unsigned int clk_div;
+	unsigned long flags;
+
+	spin_lock_irqsave(&sachip->lock, flags);
+
+	sa1111_disable_i2s_clock(devptr);
+
+	// Set new sampling rate
+	clk_div = ((AUDIO_CLK_BASE + rate/2)/rate);
+	sa1111_writel(clk_div - 1, sachip->base + SA1111_SKAUD);
+
+	sa1111_enable_i2s_clock(devptr);
+	spin_unlock_irqrestore(&sachip->lock, flags);
+}
+
+/* Will initialize the SA1111 and powerup pre-amps and select I2S protocol. Locking. */
+void sa1111_audio_init(struct sa1111_dev *devptr) {
+	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
+	unsigned long flags;
+	unsigned int val; 
+
+	DPRINTK(KERN_INFO "sac: SA1111 init...");
+	DPRINTK(KERN_INFO "sac: SA1111 device id: %d\n", devptr->devid);
+	DPRINTK(KERN_INFO "sac: SA1111 chip base: 0x%lxh\n", sachip->base);
+	DPRINTK(KERN_INFO "sac: SA1111 SAC  base: 0x%lxh\n", devptr->mapbase);
+
+	// Make sure only one thread is in the critical section below.
+	spin_lock_irqsave(&sachip->lock, flags);
+	
+	// deselect AC Link
+	sa1111_select_audio_mode(devptr, SA1111_AUDIO_I2S);
+	DPRINTK(KERN_INFO "sac: SA1111 I2S protocol enabled\n");
+
+	sa1111_reset_enable_sac(devptr);
+	sa1111_enable_l3(devptr);
+	sa1111_enable_l3_clock(devptr);
+	sa1111_enable_i2s_clock(devptr);
+	sa1111_enable_amps();
+	
+	spin_unlock_irqrestore(&sachip->lock, flags);
+	DPRINTK(KERN_INFO "sac: done init.\n");
+}
+
+/* Will de-initialize the SA1111 and its I2S and L3 hardware. Locking. */
+void sa1111_audio_shutdown(struct sa1111_dev *devptr) {
+	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
+	unsigned long flags;
+	unsigned int val; 
+
+	// Make sure only one thread is in the critical section below.
+	spin_lock_irqsave(&sachip->lock, flags);
+	
+	sa1111_disable_amps();
+	sa1111_disable_i2s_clock(devptr);
+	sa1111_disable_l3_clock(devptr);
+	sa1111_disable_l3(devptr);
+	sa1111_disable_sac(devptr);
+
+	spin_unlock_irqrestore(&sachip->lock, flags);
+
+	DPRINTK(KERN_INFO "sac: done shutdown.\n");
+}
+
+/* Enable the L3 bus clock. Locking. */
+void sa1111_l3_clockenable(struct sa1111_dev *devptr) {
+	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
+	unsigned long flags;
+
+	spin_lock_irqsave(&sachip->lock, flags);
+	sa1111_enable_l3_clock(devptr);
+	spin_unlock_irqrestore(&sachip->lock, flags);
+}
+
+/* Stop the L3 bus clock. Locking.*/
+void sa1111_l3_clockdisable(struct sa1111_dev *devptr) {
+	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
+	unsigned long flags;
+
+	spin_lock_irqsave(&sachip->lock, flags);
+	sa1111_disable_l3_clock(devptr);
+	spin_unlock_irqrestore(&sachip->lock, flags);
+}
+
+/* Prepare a l3 transmission by (enables L3).  Locking. */
+void sa1111_l3_start(struct sa1111_dev *devptr) {
+	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
+	unsigned long flags;
+
+	spin_lock_irqsave(&sachip->lock, flags);
+	sa1111_enable_l3(devptr);
+	spin_unlock_irqrestore(&sachip->lock, flags);
+}
+
+/* End a l3 transmission (disables L3). Locking.*/
+void sa1111_l3_end(struct sa1111_dev *devptr) {
+	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
+	unsigned long flags;
+
+	spin_lock_irqsave(&sachip->lock, flags);
+	sa1111_disable_l3(devptr);
+	spin_unlock_irqrestore(&sachip->lock, flags);
+}
+
+/* Start I2S clock.  Locking. */
+void sa1111_i2s_start(struct sa1111_dev *devptr) {
+	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
+	unsigned long flags;
+
+	spin_lock_irqsave(&sachip->lock, flags);
+	sa1111_enable_i2s_clock(devptr);
+	spin_unlock_irqrestore(&sachip->lock, flags);
+}
+
+/* End a l3 transmission (stops L3 clock, disables L3). Locking.*/
+void sa1111_i2s_end(struct sa1111_dev *devptr) {
+	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
+	unsigned long flags;
+
+	spin_lock_irqsave(&sachip->lock, flags);
+	sa1111_disable_i2s_clock(devptr);
+	spin_unlock_irqrestore(&sachip->lock, flags);
+}
+
+/* Send a byte via SA1111-L3. Will return -1 if transmission unsuccessful. Locking.*/
+int sa1111_l3_send_byte(struct sa1111_dev *devptr, unsigned char addr, unsigned char dat) {
+	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
+	unsigned long flags;
+
 	int i=0;
+	int err=0;
 	unsigned int SASCR;
 	unsigned int SACR1;
 	
 	// Make sure only one thread is in the critical section below.
-	spin_lock(&snd_jornada720_sa1111_sac_lock);
+	spin_lock_irqsave(&sachip->lock, flags);
+
 	sa1111_sac_writereg(devptr, 0, SA1111_L3_CAR);
 	sa1111_sac_writereg(devptr, 0, SA1111_L3_CDR);
 	mdelay(1);
@@ -78,99 +320,19 @@ void 		   sa1111_l3_send_byte(struct sa1111_dev *devptr, unsigned char addr, uns
 		mdelay(1);
 		i++;
 	}
-	// If still not confirmed, restart L3 and retry the transmission
+	// If still not confirmed, raise error flag
 	if (((sa1111_sac_readreg(devptr, SA1111_SASR0) & SASR0_L3WD) == 0)) {
-		DPRINTK(KERN_INFO "sac: Avoided crash in l3_sa1111_send_byte. Trying to reset L3.\n");
-		SACR1 = sa1111_sac_readreg(devptr, SA1111_SACR1);
-		SACR1 &= ~SACR1_L3EN;
-		sa1111_sac_writereg(devptr, SACR1, SA1111_SACR1);
-		mdelay(100);
-		SACR1 = sa1111_sac_readreg(devptr, SA1111_SACR1);
-		SACR1 |= SACR1_L3EN;
-		sa1111_sac_writereg(devptr, SACR1, SA1111_SACR1);
-		mdelay(100);
-
-		// Retry transmission
-		sa1111_sac_writereg(devptr, 0, SA1111_L3_CAR);
-		sa1111_sac_writereg(devptr, 0, SA1111_L3_CDR);
-		mdelay(1);
-		SASCR = SASCR_DTS|SASCR_RDD;
-		sa1111_sac_writereg(devptr, SASCR, SA1111_SASCR);
-		sa1111_sac_writereg(devptr, addr,  SA1111_L3_CAR);
-		sa1111_sac_writereg(devptr, dat,   SA1111_L3_CDR);
-
-		// Wait for L3 to come back in 200ms
-		while (((sa1111_sac_readreg(devptr, SA1111_SASR0) & SASR0_L3WD) == 0) && (i < 200)) {
-			mdelay(1);
-			i++;
-		}
+		DPRINTK(KERN_INFO "sac: L3 timeout.\n");
+		err=-1;
 	}
 	
 	SASCR = SASCR_DTS|SASCR_RDD;
 	sa1111_sac_writereg(devptr, SASCR, SA1111_SASCR);
 	
 	// Give up the lock
-	spin_unlock(&snd_jornada720_sa1111_sac_lock);
+	spin_unlock_irqrestore(&sachip->lock, flags);
 
-	// Wait 20msec before next transfer (uda1344 L3 is limited to 64f/s)
-	mdelay(20);
-}
-
-// Will initialize the SA1111 and its L3 hardware
-void sa1111_audio_init(struct sa1111_dev *devptr) {
-	// For register bitbanging
-	unsigned int val; 
-
-	// Get access to the "parent" sa1111 chip 
-	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
-
-	DPRINTK(KERN_INFO "sac: SA1111 init...");
-	DPRINTK(KERN_INFO "sac: SA1111 device id: %d\n", devptr->devid);
-	DPRINTK(KERN_INFO "sac: SA1111 chip base: 0x%lxh\n", sachip->base);
-	DPRINTK(KERN_INFO "sac: SA1111 SAC  base: 0x%lxh\n", devptr->mapbase);
-
-	// Make sure only one thread is in the critical section below.
-	spin_lock(&snd_jornada720_sa1111_sac_lock);
-	
-	PPSR &= ~(PPC_LDD3 | PPC_LDD4); // 5/6 are not leds
-	PPDR |= PPC_LDD3 | PPC_LDD4;
-	PPSR |= PPC_LDD4; /* enable speaker */
-	PPSR |= PPC_LDD3; /* enable microphone */
-	DPRINTK(KERN_INFO "sac: SA1111 speaker/mic pre-amps enabled\n");
-	
-	// deselect AC Link
-	sa1111_select_audio_mode(devptr, SA1111_AUDIO_I2S);
-	DPRINTK(KERN_INFO "sac: SA1111 I2S protocol enabled\n");
-
-	/* Enable the I2S clock and L3 bus clock. This is a function in another SA1111 block
-	 * which is why we need the sachip stuff (should probably be a function in sa1111.c/h)
-	 */
-	val = sa1111_readl(sachip->base + SA1111_SKPCR);
-	val|= (SKPCR_I2SCLKEN | SKPCR_L3CLKEN);
-	sa1111_writel(val, sachip->base + SA1111_SKPCR);
-	DPRINTK(KERN_INFO "sac: SA1111 I2S and L3 clocks enabled\n");
-
-	/* Activate and reset the Serial Audio Controller */
-	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
-	val |= (SACR0_ENB | SACR0_RST);
-	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
-
-	mdelay(5);
-
-	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
-	val &= ~SACR0_RST;
-	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
-	DPRINTK(KERN_INFO "sac: SA1111 SAC reset and enabled\n");
-
-	sa1111_sac_writereg(devptr, SACR1_L3EN, SA1111_SACR1);
-	DPRINTK(KERN_INFO "sac: SA1111 L3 interface enabled\n");
-
-	// Set samplerate
-	sa1111_set_audio_rate(devptr, 22050);
-	int rate = sa1111_get_audio_rate(devptr);
-	
-	spin_unlock(&snd_jornada720_sa1111_sac_lock);
-
-	DPRINTK(KERN_INFO "sac:SA1111 audio samplerate: %d\n", rate);
-	DPRINTK(KERN_INFO "sac: done init.\n");
+	// Wait 16msec before next transfer (uda1344 L3 is limited to 64f/s)
+	// mdelay(16);
+	return err;
 }
