@@ -40,11 +40,18 @@
 #include "jornada720-sacdma.h"
 #include "jornada720-sac.h"
 
-#ifdef DEBUG_SACDMA
-#define DEBUG
-#else
+
+// ********* Debugging tools **********
 #undef DEBUG
-#endif
+#undef DEBUG_DMA
+
+#ifdef DEBUG
+#define DPRINTK(format,args...) printk(KERN_DEBUG format,##args)
+#else
+#define DPRINTK(format,args...)
+#endif 
+// ********* Debugging tools **********
+
 
 /* DMA channel structure */
 typedef struct {
@@ -199,7 +206,7 @@ static int start_sa1111_sac_dma(struct sa1111_dev *devptr, dma_addr_t dma_ptr, s
 
 		// update control reg value
 		val |= SAD_CS_DSTB | SAD_CS_DEN;
-		#ifdef DEBUG
+		#ifdef DEBUG_DMA
 		printk("sacdma: using DMA channel B\n");
 
 		printk("sacdma: using DMA address reg 0x%lxh\n", REG_ADDR);
@@ -220,7 +227,7 @@ static int start_sa1111_sac_dma(struct sa1111_dev *devptr, dma_addr_t dma_ptr, s
 
 		// update control reg value
 		val |= SAD_CS_DSTA | SAD_CS_DEN;
-		#ifdef DEBUG
+		#ifdef DEBUG_DMA
 		printk(" using DMA channel A\n");
 
 		printk("sacdma: using DMA address reg 0x%lxh\n", REG_ADDR);
@@ -255,7 +262,10 @@ static irqreturn_t sa1111_dma_irqhandler(int irq, void *devptr)  {
 	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
 	unsigned long flags;
 	
+	#ifdef DEBUG_DMA
 	DPRINTK(KERN_INFO "sacdma: sa1111_dma_irqhandler called for irq: %d\n", irq);
+	#endif
+
 	if (dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_start == NULL ||
 		dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr == NULL ||
 		dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->size == 0
@@ -279,11 +289,11 @@ static irqreturn_t sa1111_dma_irqhandler(int irq, void *devptr)  {
 
 
 					// Kick off next DMA and trigger callback
-					spin_lock_irqsave(&sachip->lock, flags);
+					// spin_lock_irqsave(&sachip->lock, flags);
 					start_sa1111_sac_dma(devptr, dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr, 
 					                             dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->period_size,
 												 dma_channels[SA1111_SAC_XMT_CHANNEL].direction);	
-					spin_unlock_irqrestore(&sachip->lock, flags);
+					// spin_unlock_irqrestore(&sachip->lock, flags);
 					
 					if (dma_channels[SA1111_SAC_XMT_CHANNEL].callback != NULL)
 						dma_channels[SA1111_SAC_XMT_CHANNEL].callback(dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer, STATE_RUNNING);
@@ -300,11 +310,11 @@ static irqreturn_t sa1111_dma_irqhandler(int irq, void *devptr)  {
 						dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr = dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_start;
 						
 						// Kick off next DMA and trigger callback
-						spin_lock_irqsave(&sachip->lock, flags);
+						// spin_lock_irqsave(&sachip->lock, flags);
 						start_sa1111_sac_dma(devptr, dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr, 
 						                             dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->period_size, 
 													 dma_channels[SA1111_SAC_XMT_CHANNEL].direction);						
-						spin_unlock_irqrestore(&sachip->lock, flags);
+						// spin_unlock_irqrestore(&sachip->lock, flags);
 
 						if (dma_channels[SA1111_SAC_XMT_CHANNEL].callback != NULL)
 							dma_channels[SA1111_SAC_XMT_CHANNEL].callback(dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer, STATE_LOOPING);
@@ -329,6 +339,7 @@ static irqreturn_t sa1111_dma_irqhandler(int irq, void *devptr)  {
  */
 static int sa1111_dma_irqrequest(struct sa1111_dev *devptr, unsigned int direction) {
 	DPRINTK(KERN_ERR "sacdma: sa1111_irqrequest\n");
+
 	unsigned int irqa, irqb;
 	int err;
 
@@ -375,14 +386,14 @@ static void sa1111_dma_irqrelease(struct sa1111_dev *devptr, unsigned int direct
 	}
 
 	if (dma_channels[direction].irq_a!=0) {
-		DPRINTK(KERN_INFO "sacdma: sa1111_dma_irqrelease 1\n");
+		DPRINTK(KERN_INFO "sacdma: sa1111_dma_irqrelease irq_a:  0x%xh\n", dma_channels[direction].irq_a);
 		DPRINTK(KERN_INFO "sacdma: sa1111_dma_irqrelease devptr: 0x%lxh\n", devptr);
 		free_irq(dma_channels[direction].irq_a, devptr);
 		dma_channels[direction].irq_a = 0;
 	}
 
 	if (dma_channels[direction].irq_b!=0) {
-		DPRINTK(KERN_INFO "sacdma: sa1111_dma_irqrelease 2\n");
+		DPRINTK(KERN_INFO "sacdma: sa1111_dma_irqrelease irq_b:  0x%xh\n", dma_channels[direction].irq_a);
 		DPRINTK(KERN_INFO "sacdma: sa1111_dma_irqrelease devptr: 0x%lxh\n", devptr);
 		free_irq(dma_channels[direction].irq_b, devptr);
 		dma_channels[direction].irq_b = 0;
@@ -435,6 +446,8 @@ int sa1111_dma_release(struct sa1111_dev *devptr) {
 	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
 	unsigned long flags;
 
+	spin_lock_irqsave(&sachip->lock, flags);
+
 	sa1111_dma_irqrelease(devptr, SA1111_SAC_XMT_CHANNEL);
 	sa1111_dma_irqrelease(devptr, SA1111_SAC_RCV_CHANNEL);
 
@@ -469,7 +482,7 @@ int sa1111_dma_playback(struct sa1111_dev *devptr, dma_buf_t *dma_buffer, dma_bl
 		return -EINVAL;
 	}
 
-	spin_lock_irqsave(&sachip->lock, flags);
+	// spin_lock_irqsave(&sachip->lock, flags);
 
 	dma_channels[SA1111_SAC_XMT_CHANNEL].callback = callback;
 	dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer = dma_buffer;
@@ -486,7 +499,7 @@ int sa1111_dma_playback(struct sa1111_dev *devptr, dma_buf_t *dma_buffer, dma_bl
 		stop_sa1111_sac_dma(devptr, SA1111_SAC_XMT_CHANNEL);
 	}
 
-	spin_unlock_irqrestore(&sachip->lock, flags);
+	// spin_unlock_irqrestore(&sachip->lock, flags);
 	return err;
 }
 

@@ -79,30 +79,34 @@
 #include "octane.h"   // <- 8 bit mono startup sound 11khz
 #endif 
 
-#ifdef DEBUG_SOUND
-#define DEBUG
-#else
+// ********* Debugging tools **********
 #undef DEBUG
-#endif
 
-#define DEBUG
 #ifdef DEBUG
 #define DPRINTK(format,args...) printk(KERN_DEBUG format,##args)
 #else
 #define DPRINTK(format,args...)
 #endif 
+// ********* Debugging tools **********
 
+
+// ********* Module header ************
 MODULE_AUTHOR("Timo Biesenbach <timo.biesenbach@gmail.com>");
 MODULE_DESCRIPTION("Jornada 720 Sound Driver");
 MODULE_LICENSE("GPL");
 MODULE_SUPPORTED_DEVICE("{{ALSA,Jornada 720 Sound Driver}}");
 
-// Module specific stuff
-static char *id  = SNDRV_DEFAULT_STR1;
-static int pcm_substreams = 1;
+// Module Constants
+#define PCM_SUBSTREAMS 1
 
+// Module parameters
+static char *id  = SNDRV_DEFAULT_STR1;
 module_param(id, charp, 0444);
 MODULE_PARM_DESC(id, "ID string for Jornada 720 UDA1341 soundcard.");
+
+static int rate_limit = 48000;
+module_param(rate_limit, int, 0444);
+MODULE_PARM_DESC(rate_limit, "Driver will only offer samplerates equal or below this limit if specified.");
 
 /*
  * ========================================================================================
@@ -120,14 +124,15 @@ static struct snd_pcm_hardware jornada720_pcm_hardware = {
 	.rate_min =			22050,
 	.rate_max =			22050,
 #else
-	.rates =			SNDRV_PCM_RATE_44100 | 
+	.rates =			SNDRV_PCM_RATE_48000 |
+						SNDRV_PCM_RATE_44100 | 
  						SNDRV_PCM_RATE_32000 | 
  						SNDRV_PCM_RATE_22050 |
  						SNDRV_PCM_RATE_16000 | 
 						SNDRV_PCM_RATE_11025 | 
 						SNDRV_PCM_RATE_8000,
 	.rate_min =			8000,
-	.rate_max =			44100,
+	.rate_max =			48000,
 #endif
 	.channels_min =		2,
 	.channels_max =		2,
@@ -210,7 +215,7 @@ static int jornada720_pcm_prepare(struct snd_pcm_substream *substream) {
 	struct sa1111 *sachip = get_sa1111_base_drv(jornada720->pdev_sa1111);
 	unsigned long flags;
 
-	spin_lock_irqsave(&sachip->lock, flags);
+	// spin_lock_irqsave(&sachip->lock, flags);
 
 	jornada720->substream = substream;
 
@@ -221,7 +226,7 @@ static int jornada720_pcm_prepare(struct snd_pcm_substream *substream) {
 	playback_buffer.period_size	= snd_pcm_lib_period_bytes(substream);
 	playback_buffer.loop = 1;
 	// dbg_show_buffer(&playback_buffer);
-	spin_unlock_irqrestore(&sachip->lock, flags);
+	// spin_unlock_irqrestore(&sachip->lock, flags);
 	return 0;
 }
 
@@ -234,10 +239,10 @@ static snd_pcm_uframes_t jornada720_pcm_pointer(struct snd_pcm_substream *substr
 	unsigned long flags;
 	snd_pcm_sframes_t frames_played;
 
-	spin_lock_irqsave(&sachip->lock, flags);
+	// spin_lock_irqsave(&sachip->lock, flags);
 	ssize_t bytes = playback_buffer.dma_ptr - playback_buffer.dma_start;
 	frames_played = bytes_to_frames(runtime, bytes);
-	spin_unlock_irqrestore(&sachip->lock, flags);
+	// spin_unlock_irqrestore(&sachip->lock, flags);
 
 	return frames_played;
 }
@@ -248,6 +253,7 @@ static int jornada720_pcm_hw_params(struct snd_pcm_substream *substream, struct 
 	struct snd_jornada720 *jornada720 = snd_pcm_substream_chip(substream);
 
 	int samplerate = params_rate(hw_params);
+	
 	DPRINTK(KERN_INFO "sound: jornada720_pcm_hw_params set samplerate %d\n", samplerate);
 	uda1344_set_samplerate(jornada720->pdev_sa1111, samplerate);
 	sa1111_audio_setsamplerate(jornada720->pdev_sa1111, samplerate);
@@ -856,7 +862,7 @@ static int snd_jornada720_probe(struct sa1111_dev *devptr) {
 	jornada720->pchip_uda1344 = uda1344_instance();
 	jornada720->pdev_sa1111 = devptr;
 
-	err = snd_card_jornada720_pcm(jornada720, idx, pcm_substreams);
+	err = snd_card_jornada720_pcm(jornada720, idx, PCM_SUBSTREAMS);
 	if (err < 0)
 		goto __nodev;
 
@@ -896,18 +902,24 @@ static int snd_jornada720_probe(struct sa1111_dev *devptr) {
 /* Counterpart to probe(), shutdown stuff here that was initialized in probe() */
 static int snd_jornada720_remove(struct sa1111_dev *devptr) {
 	// Release IRQs
+	DPRINTK(KERN_DEBUG "sound remove: sa1111_dma_release");
 	sa1111_dma_release(devptr);
 
 	// Close Codec
+	DPRINTK(KERN_DEBUG "sound remove: uda1344_close");
 	uda1344_close(devptr);
 
 	// Orderly shutdown the audio stuff.
+	DPRINTK(KERN_DEBUG "sound remove: sa1111_audio_shutdown");
 	sa1111_audio_shutdown(devptr);
 
 	// Turn SAC off
+	DPRINTK(KERN_DEBUG "sound remove: sa1111_disable_device");
 	sa1111_disable_device(devptr);
 
+	DPRINTK(KERN_DEBUG "sound remove: snd_card_free");
 	snd_card_free(sa1111_get_drvdata(devptr));
+	DPRINTK(KERN_DEBUG "sound remove: done.");
 	return 0;
 }
 
@@ -960,6 +972,21 @@ static void snd_jornada720_unregister_all(void) {
  */
 static int __init alsa_card_jornada720_init(void)
 {
+	// Process module parameters
+	if (rate_limit>48000) rate_limit=48000;
+	if (rate_limit<8000)  rate_limit=8000;
+
+	DPRINTK(KERN_INFO "snd-jornada720: max. samplerate: %d\n", rate_limit);
+
+	jornada720_pcm_hardware.rate_max = rate_limit;
+	jornada720_pcm_hardware.rates = SNDRV_PCM_RATE_8000;
+	if (rate_limit >= 11025) jornada720_pcm_hardware.rates |= SNDRV_PCM_RATE_11025;
+	if (rate_limit >= 16000) jornada720_pcm_hardware.rates |= SNDRV_PCM_RATE_16000;
+	if (rate_limit >= 22050) jornada720_pcm_hardware.rates |= SNDRV_PCM_RATE_22050;
+	if (rate_limit >= 32000) jornada720_pcm_hardware.rates |= SNDRV_PCM_RATE_32000;
+	if (rate_limit >= 44100) jornada720_pcm_hardware.rates |= SNDRV_PCM_RATE_44100;
+	if (rate_limit >= 48000) jornada720_pcm_hardware.rates |= SNDRV_PCM_RATE_48000;
+
 	int err;
 	err = sa1111_driver_register(&snd_jornada720_driver);
 	if (err < 0)

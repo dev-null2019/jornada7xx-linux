@@ -38,11 +38,16 @@
 #include "jornada720-common.h"
 #include "jornada720-sac.h"
 
-#ifdef DEBUG_SAC
-#define DEBUG
-#else
+// ********* Debugging tools **********
 #undef DEBUG
-#endif
+
+#ifdef DEBUG
+#define DPRINTK(format,args...) printk(KERN_DEBUG format,##args)
+#else
+#define DPRINTK(format,args...)
+#endif 
+// ********* Debugging tools **********
+
 
 #define AUDIO_CLK_BASE		561600
 
@@ -164,6 +169,41 @@ static void sa1111_disable_sac(struct sa1111_dev *devptr) {
 	DPRINTK(KERN_INFO "sac: SA1111 SAC disabled\n");
 }
 
+// Calculates the sysclock divider based on the samplerate; this might have rounding errors.
+static inline long sa1111_clkdiv_calc(long samplerate) {
+	return ((AUDIO_CLK_BASE + samplerate/2)/samplerate);
+}
+
+// Returns the clock divider based on the table given in Intels SA1111 manual (+estimate for 48khz)
+static inline long sa1111_clkdiv_tab(long samplerate) {
+	long clk_div=70;
+
+	if (samplerate >= 48000) {
+		clk_div = 11;
+ 	}
+	else if (samplerate >= 44100) {
+		clk_div = 12;	
+ 	}
+	else if (samplerate >= 32000) {
+		clk_div = 18;
+	}
+	else if (samplerate >= 22050) {
+		clk_div = 25;
+	}
+	else if (samplerate >= 16000) {
+		clk_div = 35;
+	}
+	else if (samplerate >= 11025) {
+		clk_div = 51;
+	}
+	else if (samplerate >= 8000) {
+		clk_div = 70;
+	}
+	else {
+		clk_div = 70;
+	}
+	return clk_div;
+}
 
 /// ********** PUBLIC INTERFACE *************************
 
@@ -179,7 +219,7 @@ void sa1111_audio_setsamplerate(struct sa1111_dev *devptr, long rate) {
 	sa1111_disable_i2s_clock(devptr);
 
 	// Set new sampling rate
-	clk_div = ((AUDIO_CLK_BASE + rate/2)/rate);
+	clk_div = sa1111_clkdiv_tab(rate);
 	sa1111_writel(clk_div - 1, sachip->base + SA1111_SKAUD);
 
 	sa1111_enable_i2s_clock(devptr);

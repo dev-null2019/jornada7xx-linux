@@ -254,18 +254,30 @@ static void ide_release(struct pcmcia_device *link)
 
     dev_dbg(&link->dev, "ide_release(0x%p)\n", link);
 
+	// Patch to send soft reset to drive in order to flush cache
+    unsigned long io_base, ctl_base;
+
+    io_base = link->resource[0]->start;
+    if (link->resource[1]->end)
+	    ctl_base = link->resource[1]->start;
+    else
+	    ctl_base = link->resource[0]->start + 0x0e;
+
+    outb(0x04, ctl_base);
+	// end patch
+	
     if (info->ndev) {
-	ide_hwif_t *hwif = host->ports[0];
-	unsigned long data_addr, ctl_addr;
+		ide_hwif_t *hwif = host->ports[0];
+		unsigned long data_addr, ctl_addr;
 
-	data_addr = hwif->io_ports.data_addr;
-	ctl_addr = hwif->io_ports.ctl_addr;
+		data_addr = hwif->io_ports.data_addr;
+		ctl_addr = hwif->io_ports.ctl_addr;
 
-	ide_host_remove(host);
-	info->ndev = 0;
+		ide_host_remove(host);
+		info->ndev = 0;
 
-	release_region(ctl_addr, 1);
-	release_region(data_addr, 8);
+		release_region(ctl_addr, 1);
+		release_region(data_addr, 8);
     }
 
     pcmcia_disable_device(link);

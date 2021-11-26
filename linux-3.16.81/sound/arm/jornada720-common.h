@@ -19,12 +19,6 @@
 // Disable sleep ability for now
 #undef CONFIG_PM_SLEEP
 
-// Debugging switches
-#undef DEBUG_SOUND
-#undef DEBUG_SAC
-#undef DEBUG_SACDMA
-#undef DEBUG_UDA1344
-
 // Fixed samplerate
 // #define RATE_FIXED
 #undef RATE_FIXED
@@ -37,13 +31,5 @@
 // Buffer sizes for dma allocation
 #define MIN_BUFFER_SIZE		(16*1024)
 #define MAX_BUFFER_SIZE		(64*1024)
-
-// ********* Debugging tools **********
-// printk in DEBUG mode
-#ifdef DEBUG
-#define DPRINTK(format,args...) printk(KERN_DEBUG format,##args)
-#else
-#define DPRINTK(format,args...)
-#endif 
 
 #endif
