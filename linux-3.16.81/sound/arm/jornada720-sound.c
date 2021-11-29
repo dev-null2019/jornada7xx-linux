@@ -139,9 +139,9 @@ static struct snd_pcm_hardware jornada720_pcm_hardware = {
 	.buffer_bytes_max =	MAX_BUFFER_SIZE,
 	.period_bytes_min =	MIN_DMA_BLOCK_SIZE,
 	.period_bytes_max =	MAX_DMA_BLOCK_SIZE,
-	.periods_min =		4,
-	.periods_max =		1024,
-	.fifo_size =		16,
+	.periods_min =		MIN_NUM_PERIODS,
+	.periods_max =		MAX_NUM_PERIODS,
+	.fifo_size =		0,
 };
 
 /*
@@ -320,7 +320,7 @@ static int snd_card_jornada720_pcm(struct snd_jornada720 *jornada720, int device
 	strcpy(pcm->name, "Jornada720 PCM");
 
 	// SNDRV_DMA_TYPE_DEV will call alloc_dma_coherent in the end
-	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_DEV, jornada720->pdev_sa1111, 64*1024, 64*1024);
+	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_DEV, jornada720->pdev_sa1111, MAX_BUFFER_SIZE, MAX_BUFFER_SIZE);
 	return 0;
 }
 

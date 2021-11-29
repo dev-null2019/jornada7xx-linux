@@ -287,18 +287,25 @@ static irqreturn_t sa1111_dma_irqhandler(int irq, void *devptr)  {
 				if (dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr < (dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_start + dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->size)
 				) {
 
+					size_t adjustment=0;
+					// See if we overshoot the buffer
+					if ((dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr + dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->period_size) > 
+						(dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_start + dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->size)) 
+					{
+							// Calculate adjustment to not overshoot
+							adjustment = (dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr + dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->period_size) - (dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_start + dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->size);
+							// printk(KERN_ERR "sacdma: Adjusting for remaining buffer size by %d bytes\n", adjustment);
+					}
 
 					// Kick off next DMA and trigger callback
 					// spin_lock_irqsave(&sachip->lock, flags);
 					start_sa1111_sac_dma(devptr, dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr, 
-					                             dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->period_size,
+					                             dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->period_size - adjustment,
 												 dma_channels[SA1111_SAC_XMT_CHANNEL].direction);	
 					// spin_unlock_irqrestore(&sachip->lock, flags);
 					
 					if (dma_channels[SA1111_SAC_XMT_CHANNEL].callback != NULL)
 						dma_channels[SA1111_SAC_XMT_CHANNEL].callback(dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer, STATE_RUNNING);
-
-						
 				} 
 				// if end of buffer reached, replay from start if loop flag set
 				else {
