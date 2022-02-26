@@ -101,7 +101,7 @@ static void sa1111_disable_i2s_clock(struct sa1111_dev *devptr) {
 	DPRINTK(KERN_INFO "sac: SA1111 I2S clock enabled\n");
 }
 
-/* Enable the L3 bus clock and SAC L3 interface. Non-locking. */
+/* Enable the L3 bus clock interface. Non-locking. */
 static void sa1111_enable_l3_clock(struct sa1111_dev *devptr) {
 	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
 	unsigned int val;
@@ -112,7 +112,7 @@ static void sa1111_enable_l3_clock(struct sa1111_dev *devptr) {
 	DPRINTK(KERN_INFO "sac: SA1111 L3 clock enabled\n");
 }
 
-/* Disable the L3 bus clock and SAC L3 interface. Non-locking. */
+/* Disable the L3 bus clock interface. Non-locking. */
 static void sa1111_disable_l3_clock(struct sa1111_dev *devptr) {
 	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
 	unsigned int val; 
@@ -126,7 +126,7 @@ static void sa1111_disable_l3_clock(struct sa1111_dev *devptr) {
 	DPRINTK(KERN_INFO "sac: SA1111 L3 clock enabled\n");
 }
 
-/* Enable the L3 bus clock and SAC L3 interface. Non-locking. */
+/* Enable the SAC L3 interface. Non-locking. */
 static void sa1111_enable_l3(struct sa1111_dev *devptr) {
 	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
 	unsigned int val;
@@ -135,7 +135,7 @@ static void sa1111_enable_l3(struct sa1111_dev *devptr) {
 	DPRINTK(KERN_INFO "sac: SA1111 L3 interface enabled\n");
 }
 
-/* Disable the L3 bus clock and SAC L3 interface. Non-locking. */
+/* Disable the SAC L3 interface. Non-locking. */
 static void sa1111_disable_l3(struct sa1111_dev *devptr) {
 	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
 	unsigned int val; 
@@ -294,22 +294,24 @@ void sa1111_l3_clockdisable(struct sa1111_dev *devptr) {
 	spin_unlock_irqrestore(&sachip->lock, flags);
 }
 
-/* Prepare a l3 transmission by (enables L3).  Locking. */
+/* Prepare a l3 transmission by (enables L3 + clock).  Locking. */
 void sa1111_l3_start(struct sa1111_dev *devptr) {
 	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
 	unsigned long flags;
 
 	spin_lock_irqsave(&sachip->lock, flags);
 	sa1111_enable_l3(devptr);
+	sa1111_enable_l3_clock(devptr);
 	spin_unlock_irqrestore(&sachip->lock, flags);
 }
 
-/* End a l3 transmission (disables L3). Locking.*/
+/* End a l3 transmission (disables L3 + clock). Locking.*/
 void sa1111_l3_end(struct sa1111_dev *devptr) {
 	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
 	unsigned long flags;
 
 	spin_lock_irqsave(&sachip->lock, flags);
+	sa1111_disable_l3_clock(devptr);
 	sa1111_disable_l3(devptr);
 	spin_unlock_irqrestore(&sachip->lock, flags);
 }
